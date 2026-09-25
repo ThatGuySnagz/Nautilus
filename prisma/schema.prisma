@@ -1,0 +1,292 @@
+// Prisma schema for Nautilus - Stack Overflow + GitHub Discussions hybrid
+
+generator client {
+  provider = "prisma-client"
+  output   = "../app/generated/prisma"
+}
+
+datasource db {
+  provider = "sqlite"
+}
+
+// ===================== EXISTING MODELS =====================
+
+model User {
+  id        String   @id @default(cuid())
+  username  String   @unique
+  email     String   @unique
+  password  String // bcrypt hashed
+  role      String   @default("user") // "user" | "admin"
+  bio       String?
+  avatarUrl String?
+  showEmail Boolean  @default(true)
+  createdAt DateTime @default(now())
+
+  // Relations
+  questions           Question[]
+  answers             Answer[]
+  votes               Vote[]
+  sessions            Session[]
+  ownedProjects       Project[]          @relation("ProjectOwner")
+  contributedProjects Project[]          @relation("ProjectContributors")
+  discussionThreads   DiscussionThread[]
+  discussionReplies   DiscussionReply[]
+  blogs               Blog[]
+
+  // Git relations (optional, feature-gated)
+  assignedGitIssues    GitIssue[]    @relation("GitIssueAssignee")
+  authoredPullRequests PullRequest[] @relation("PullRequestAuthor")
+  authoredCommits      Commit[]      @relation("CommitAuthor")
+}
+
+model Session {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  token     String   @unique // httpOnly cookie value
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+}
+
+model Question {
+  id        String   @id @default(cuid())
+  title     String
+  body      String
+  authorId  String
+  author    User     @relation(fields: [authorId], references: [id])
+  projectId String? // optional: link question to a project
+  project   Project? @relation(fields: [projectId], references: [id])
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  answers Answer[]
+  votes   Vote[]
+  tags    QuestionTag[]
+}
+
+model Answer {
+  id         String   @id @default(cuid())
+  body       String
+  questionId String
+  question   Question @relation(fields: [questionId], references: [id], onDelete: Cascade)
+  authorId   String
+  author     User     @relation(fields: [authorId], references: [id])
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  votes Vote[]
+}
+
+model Vote {
+  id         String    @id @default(cuid())
+  userId     String
+  user       User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  value      Int // 1 = upvote, -1 = downvote
+  questionId String?
+  question   Question? @relation(fields: [questionId], references: [id], onDelete: Cascade)
+  answerId   String?
+  answer     Answer?   @relation(fields: [answerId], references: [id], onDelete: Cascade)
+  createdAt  DateTime  @default(now())
+
+  @@unique([userId, questionId])
+  @@unique([userId, answerId])
+}
+
+model Tag {
+  id        String        @id @default(cuid())
+  name      String        @unique
+  questions QuestionTag[]
+}
+
+model QuestionTag {
+  questionId String
+  question   Question @relation(fields: [questionId], references: [id], onDelete: Cascade)
+  tagId      String
+  tag        Tag      @relation(fields: [tagId], references: [id], onDelete: Cascade)
+
+  @@id([questionId, tagId])
+}
+
+model Project {
+  id            String   @id @default(cuid())
+  slug          String
+  name          String
+  description   String
+  ownerId       String
+  owner         User     @relation("ProjectOwner", fields: [ownerId], references: [id])
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  showOnProfile Boolean  @default(true)
+  isPublic      Boolean  @default(true)
+
+  repositories GitRepository[] // opposite GitRepository.project
+
+  questions         Question[]
+  discussionThreads DiscussionThread[]
+  files             ProjectFile[]
+  contributors      User[]             @relation("ProjectContributors")
+
+  @@unique([ownerId, slug])
+}
+
+model DiscussionThread {
+  id        String   @id @default(cuid())
+  title     String
+  body      String
+  projectId String
+  project   Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  authorId  String
+  author    User     @relation(fields: [authorId], references: [id])
+  createdAt DateTime @default(now())
+
+  replies DiscussionReply[]
+}
+
+model DiscussionReply {
+  id        String           @id @default(cuid())
+  body      String
+  threadId  String
+  thread    DiscussionThread @relation(fields: [threadId], references: [id], onDelete: Cascade)
+  authorId  String
+  author    User             @relation(fields: [authorId], references: [id])
+  createdAt DateTime         @default(now())
+}
+
+model ProjectFile {
+  id        String   @id @default(cuid())
+  projectId String
+  project   Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  name      String
+  // For small text files we may still store content in DB temporarily.
+  // For larger/binary files we store on disk and use `path` + metadata.
+  content   String?
+  path      String? // relative path on disk storage
+  size      Int? // file size in bytes
+  mimeType  String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Blog {
+  id        String   @id @default(cuid())
+  title     String
+  body      String
+  authorId  String
+  author    User     @relation(fields: [authorId], references: [id])
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+// ===================== OPTIONAL GIT MODELS =====================
+// These are additive-only and can be toggled via ENABLE_GIT_FEATURES.
+
+model GitRepository {
+  id            String   @id @default(cuid())
+  projectId     String
+  project       Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  name          String
+  description   String?
+  isPrivate     Boolean  @default(false)
+  defaultBranch String   @default("main")
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  branches     Branch[]
+  commits      Commit[]
+  pullRequests PullRequest[]
+  issues       GitIssue[]
+
+  @@unique([projectId, name])
+}
+
+model Branch {
+  id           String        @id @default(cuid())
+  repositoryId String
+  repository   GitRepository @relation(fields: [repositoryId], references: [id], onDelete: Cascade)
+  name         String
+  headCommitId String?       @unique
+  headCommit   Commit?       @relation("BranchHead", fields: [headCommitId], references: [id])
+  commits      Commit[] // opposite Commit.branch
+  createdAt    DateTime      @default(now())
+
+  @@unique([repositoryId, name])
+}
+
+model Commit {
+  id           String        @id @default(cuid())
+  repositoryId String
+  repository   GitRepository @relation(fields: [repositoryId], references: [id], onDelete: Cascade)
+  branchId     String?
+  branch       Branch?       @relation(fields: [branchId], references: [id])
+  headOfBranch Branch?       @relation("BranchHead")
+  authorId     String?
+  author       User?         @relation("CommitAuthor", fields: [authorId], references: [id])
+  message      String
+  treeSha      String
+  parentSha    String?
+  createdAt    DateTime      @default(now())
+
+  entries TreeEntry[]
+}
+
+model TreeEntry {
+  id       String  @id @default(cuid())
+  commitId String
+  commit   Commit  @relation(fields: [commitId], references: [id], onDelete: Cascade)
+  path     String // e.g. src/index.ts
+  kind     String // "blob" | "tree"
+  mode     String  @default("100644")
+  blob     String? // future: separate blob store or real object DB
+  size     Int?
+  sha      String?
+}
+
+model PullRequest {
+  id           String        @id @default(cuid())
+  repositoryId String
+  repository   GitRepository @relation(fields: [repositoryId], references: [id], onDelete: Cascade)
+  number       Int
+  title        String
+  description  String?
+  sourceBranch String
+  targetBranch String        @default("main")
+  status       String        @default("open") // open | closed | merged
+  authorId     String
+  author       User          @relation("PullRequestAuthor", fields: [authorId], references: [id])
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+  mergedAt     DateTime?
+
+  @@unique([repositoryId, number])
+}
+
+model GitIssue {
+  id           String        @id @default(cuid())
+  repositoryId String
+  repository   GitRepository @relation(fields: [repositoryId], references: [id], onDelete: Cascade)
+  number       Int
+  title        String
+  description  String?
+  status       String        @default("open") // open | closed
+  assigneeId   String?
+  assignee     User?         @relation("GitIssueAssignee", fields: [assigneeId], references: [id])
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+
+  labels     GitLabel[]     @relation("GitIssueLabels")
+  milestones GitMilestone[] @relation("GitIssueMilestones")
+}
+
+model GitLabel {
+  id     String     @id @default(cuid())
+  name   String
+  color  String     @default("#6e7781")
+  issues GitIssue[] @relation("GitIssueLabels")
+}
+
+model GitMilestone {
+  id      String     @id @default(cuid())
+  title   String
+  dueDate DateTime?
+  issues  GitIssue[] @relation("GitIssueMilestones")
+}
